@@ -1,0 +1,393 @@
+<!-- pom.xml -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.projectlombok</groupId>
+    <artifactId>lombok</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.kafka</groupId>
+    <artifactId>spring-kafka</artifactId>
+</dependency>
+
+------------------------------
+// Application.java
+@SpringBootApplication
+public class Application {
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
+}
+
+// SecurityConfig.java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+    @Autowired
+    private UserDetailsServiceImpl userDetailsService;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http.csrf().disable()
+            .authorizeRequests()
+                .antMatchers("/api/register").permitAll()
+                .antMatchers("/api/**").authenticated()
+                .and()
+            .formLogin()
+                .and()
+            .logout();
+    }
+
+    @Override
+    protected void configure(AuthenticationManagerBuilder auth) throws Exception {
+        auth.userDetailsService(userDetailsService).passwordEncoder(passwordEncoder);
+    }
+}
+
+------------------------------
+// User.java
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class User {
+    private Long id;
+    private String username;
+    private String password;
+    private List<String> roles;
+}
+
+------------------------------
+// UserService.java
+public interface UserService {
+    User register(User user);
+    User findByUsername(String username);
+}
+
+------------------------------
+// UserServiceImpl.java
+@Service
+public class UserServiceImpl implements UserService {
+    private List<User> users = new ArrayList<>();
+
+    @Override
+    public User register(User user) {
+        // Логика регистрации пользователя и сохранения в базу данных
+        users.add(user);
+        return user;
+    }
+
+    @Override
+    public User findByUsername(String username) {
+        // Логика поиска пользователя по его имени пользователя в базе данных
+        return users.stream()
+                .filter(u -> u.getUsername().equals(username))
+                .findFirst()
+                .orElse(null);
+    }
+}
+
+--------------------------------
+// AuthController.java
+@RestController
+@RequestMapping("/api")
+public class AuthController {
+    private final UserService userService;
+
+    public AuthController(UserService userService) {
+        this.userService = userService;
+    }
+
+    @PostMapping("/register")
+    public ResponseEntity<User> register(@RequestBody User user) {
+        // Логика регистрации пользователя и возврат ответа
+        userService.register(user);
+        return ResponseEntity.ok(user);
+    }
+
+    @GetMapping("/user")
+    public ResponseEntity<User> getUser(Principal principal) {
+        // Получение текущего пользователя из контекста безопасности
+        String username = principal.getName();
+        User user = userService.findByUsername(username);
+        return ResponseEntity.ok(user);
+    }
+}
+
+--------------------------------
+// KafkaConfig.java
+@Configuration
+public class KafkaConfig {
+    @Bean
+    public ProducerFactory<String, String> producerFactory() {
+        Map<String, Object> configProps = new HashMap<>();
+        // Конфигурация для ProducerFactory, если необходимо
+        return new DefaultKafkaProducerFactory<>(configProps);
+    }
+
+    @Bean
+    public KafkaTemplate<String, String> kafkaTemplate() {
+        return new KafkaTemplate<>(producerFactory());
+    }
+
+    // Дополнительная конфигурация, если необходимо
+}
+
+-----------------------
+// KafkaService.java
+@Service
+public class KafkaService {
+    private final KafkaTemplate<String, String> kafkaTemplate;
+
+    public KafkaService(KafkaTemplate<String, String> kafkaTemplate) {
+        this.kafkaTemplate = kafkaTemplate;
+    }
+
+    public void sendMessage(String topic, String message) {
+        kafkaTemplate.send(topic, message);
+    }
+}
+
+------------------------
+// CartService.java
+@Service
+public class CartService {
+    private Map<Long, List<Item>> carts = new HashMap<>();
+
+    public List<Item> getCartItems(Long userId) {
+        return carts.getOrDefault(userId, new ArrayList<>());
+    }
+
+    public void addToCart(Long userId, Item item) {
+        carts.computeIfAbsent(userId, k -> new ArrayList<>()).add(item);
+    }
+
+    public void removeFromCart(Long userId, Long itemId) {
+        List<Item> userCart = carts.get(userId);
+        if (userCart != null) {
+            userCart.removeIf(item -> item.getId().equals(itemId));
+        }
+    }
+}
+
+---------------------------
+// Item.java
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class Item {
+    private Long id;
+    private String name;
+    private double price;
+    private int quantity;
+}
+
+----------------------------------
+// ProductService.java
+@Service
+public class ProductService {
+    private List<Item> items = new ArrayList<>();
+
+    public List<Item> getAllItems() {
+        return items;
+    }
+
+    public Item getItemById(Long itemId) {
+        return items.stream()
+                .filter(item -> item.getId().equals(itemId))
+                .findFirst()
+                .orElse(null);
+    }
+
+    public void createItem(Item item) {
+        items.add(item);
+    }
+
+    public void updateItem(Item item) {
+        Item existingItem = getItemById(item.getId());
+        if (existingItem != null) {
+            existingItem.setName(item.getName());
+            existingItem.setPrice(item.getPrice());
+            existingItem.setQuantity(item.getQuantity());
+        }
+    }
+
+    public void deleteItem(Long itemId) {
+        items.removeIf(item -> item.getId().equals(itemId));
+    }
+}
+
+-----------------------------
+// CartController.java
+@RestController
+@RequestMapping("/api/cart")
+public class CartController {
+    private final CartService cartService;
+
+    public CartController(CartService cartService) {
+        this.cartService = cartService;
+    }
+
+    @GetMapping("/{userId}")
+    public ResponseEntity<List<Item>> getCartItems(@PathVariable Long userId) {
+        List<Item> cartItems = cartService.getCartItems(userId);
+        return ResponseEntity.ok(cartItems);
+    }
+
+    @PostMapping("/{userId}")
+    public ResponseEntity<Void> addToCart(@PathVariable Long userId, @RequestBody Item item) {
+        cartService.addToCart(userId, item);
+        return ResponseEntity.ok().build();
+    }
+
+    @DeleteMapping("/{userId}/{itemId}")
+    public ResponseEntity<Void> removeFromCart(@PathVariable Long userId, @PathVariable Long itemId) {
+        cartService.removeFromCart(userId, itemId);
+        return ResponseEntity.ok().build();
+    }
+}
+
+--------------------------
+// ProductController.java
+@RestController
+@RequestMapping("/api/products")
+public class ProductController {
+    private final ProductService productService;
+
+    public ProductController(ProductService productService) {
+        this.productService = productService;
+    }
+
+    @GetMapping
+    public ResponseEntity<List<Item>> getAllItems() {
+        List<Item> items = productService.getAllItems();
+        return ResponseEntity.ok(items);
+    }
+
+    @GetMapping("/{itemId}")
+    public ResponseEntity<Item> getItemById(@PathVariable Long itemId) {
+        Item item = productService.getItemById(itemId);
+        if (item != null) {
+            return ResponseEntity.ok(item);
+        } else {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @PostMapping
+    public ResponseEntity<Void> createItem(@RequestBody Item item) {
+        productService.createItem(item);
+        return ResponseEntity.ok().build();
+    }
+
+    @PutMapping("/{itemId}")
+    public ResponseEntity<Void> updateItem(@PathVariable Long itemId, @RequestBody Item item) {
+        item.setId(itemId);
+        productService.updateItem(item);
+        return ResponseEntity.ok().build();
+    }
+
+    @DeleteMapping("/{itemId}")
+    public ResponseEntity<Void> deleteItem(@PathVariable Long itemId) {
+        productService.deleteItem(itemId);
+        return ResponseEntity.ok().build();
+    }
+}
+
+------------------
+// Payment.java
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class Payment {
+    private Long id;
+    private Long userId;
+    private double amount;
+    private boolean paymentStatus;
+}
+
+--------------
+// PaymentRepository.java
+@Repository
+public class PaymentRepository {
+    private final List<Payment> paymentDatabase = new ArrayList<>();
+
+    public Payment savePayment(Payment payment) {
+        paymentDatabase.add(payment);
+        return payment;
+    }
+
+    public Payment getPaymentById(Long paymentId) {
+        return paymentDatabase.stream()
+                .filter(payment -> payment.getId().equals(paymentId))
+                .findFirst()
+                .orElse(null);
+    }
+}
+
+--------------
+// PaymentService.java
+@Service
+public class PaymentService {
+    private final PaymentRepository paymentRepository;
+
+    public PaymentService(PaymentRepository paymentRepository) {
+        this.paymentRepository = paymentRepository;
+    }
+
+    public Payment processPayment(Long userId, double amount) {
+        // Здесь можно реализовать логику обработки онлайн оплаты.
+        // Например, взаимодействие с платежным шлюзом или сторонними сервисами.
+        // В данном примере, просто создадим объект оплаты и сохраним его в репозитории.
+        Payment payment = new Payment();
+        payment.setId(generatePaymentId());
+        payment.setUserId(userId);
+        payment.setAmount(amount);
+        payment.setPaymentStatus(true); // В данном примере, считаем оплату успешной.
+
+        return paymentRepository.savePayment(payment);
+    }
+
+    private Long generatePaymentId() {
+        // В реальном проекте следует использовать уникальный механизм генерации ID.
+        return System.currentTimeMillis();
+    }
+}
+
+------------------------
+// PaymentController.java
+@RestController
+@RequestMapping("/api/payments")
+public class PaymentController {
+    private final PaymentService paymentService;
+
+    public PaymentController(PaymentService paymentService) {
+        this.paymentService = paymentService;
+    }
+
+    @PostMapping("/{userId}/process")
+    public ResponseEntity<Payment> processPayment(@PathVariable Long userId, @RequestBody double amount) {
+        Payment payment = paymentService.processPayment(userId, amount);
+        return ResponseEntity.ok(payment);
+    }
+
+    @GetMapping("/{paymentId}")
+    public ResponseEntity<Payment> getPaymentById(@PathVariable Long paymentId) {
+        Payment payment = paymentService.getPaymentById(paymentId);
+        if (payment != null) {
+            return ResponseEntity.ok(payment);
+        } else {
+            return ResponseEntity.notFound().build();
+        }
+    }
+}
+
+-----------------------
